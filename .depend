@@ -1,0 +1,1 @@
+bhyve.full: /usr/lib/libc.a /usr/lib/libvmmapi.a /usr/lib/libmd.a /usr/lib/libpthread.a /usr/lib/libz.a /usr/lib/libutil.a /usr/lib/libsbuf.a /usr/lib/libcam.a /usr/lib/libcrypto.a
