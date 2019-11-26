@@ -42,6 +42,7 @@ __FBSDID("$FreeBSD: releng/12.1/usr.sbin/bhyve/bhyverun.c 349961 2019-07-13 00:2
 
 #include <machine/atomic.h>
 #include <machine/segments.h>
+#include <machine/cpufunc.h>
 
 #ifndef WITHOUT_CAPSICUM
 #include <capsicum_helpers.h>
@@ -192,6 +193,8 @@ struct bhyvestats {
 	uint64_t	vmexit_pause;
 	uint64_t	vmexit_mtrap;
 	uint64_t	vmexit_inst_emul;
+        uint64_t        vmexit_any;
+        uint64_t        guest_time;
 	uint64_t	cpu_switch_rotate;
 	uint64_t	cpu_switch_direct;
 } stats;
@@ -791,6 +794,37 @@ static vmexit_handler_t handler[VM_EXITCODE_MAX] = {
 	[VM_EXITCODE_DEBUG] = vmexit_debug,
 };
 
+//Status of stats sysctls
+
+uint64_t vm_stats_sysctls_lastflush_t = 0;
+
+struct bhyvestats stats_atlastflush;
+
+static void
+vm_init_stats_sysctls(){
+        //Reset or initialize sysctls to 0
+        printf("Resetting sysctls...\n");
+}
+static void
+vm_flush_stats_sysctls(){
+      uint64_t t_now = rdtsc();
+      //Snapshot of stats
+      //TODO actually compute a second
+      if (t_now < vm_stats_sysctls_lastflush_t + 1e9){
+          //Throttle updates to the sysctls. At least 1s between updates.
+          return;
+      }
+      struct bhyvestats stats_tmp = stats;
+      //We would update the sysctls here.
+      //TODO actual rdtsc -> second conversion.
+      printf("In last second: %ld exits %.3f guest time (ms)\n",
+        stats_tmp.vmexit_any - stats_atlastflush.vmexit_any,
+        (stats_tmp.guest_time - stats_atlastflush.guest_time)/1e6
+      );
+      stats_atlastflush = stats_tmp;
+      vm_stats_sysctls_lastflush_t = rdtsc();
+}
+
 static void
 vm_loop(struct vmctx *ctx, int vcpu, uint64_t startrip)
 {
@@ -811,7 +845,14 @@ vm_loop(struct vmctx *ctx, int vcpu, uint64_t startrip)
 	assert(error == 0);
 
 	while (1) {
+                uint64_t t_run_start = rdtsc();
 		error = vm_run(ctx, vcpu, &vmexit[vcpu]);
+                uint64_t t_run_end = rdtsc();
+                //TODO thread private stats for accuracy and performance
+                stats.vmexit_any++;
+                //TODO precompute scaling factor to convert rdtsc() ticks to
+                //nanoseconds
+                stats.guest_time+=(t_run_end - t_run_start);
 		if (error != 0)
 			break;
 
@@ -832,6 +873,9 @@ vm_loop(struct vmctx *ctx, int vcpu, uint64_t startrip)
 		default:
 			exit(4);
 		}
+
+                //Update counters before going back to guest
+                vm_flush_stats_sysctls();
 	}
 	fprintf(stderr, "vm_run error %d, errno %d\n", error, errno);
 }
@@ -1106,6 +1150,8 @@ main(int argc, char *argv[])
 
 	if (argc != 1)
 		usage(1);
+
+        vm_init_stats_sysctls();
 
 	vmname = argv[0];
 	ctx = do_open(vmname);
